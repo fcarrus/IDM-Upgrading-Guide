@@ -75,7 +75,7 @@ Now it's a good time to take a snapshot. Please note that even if reverting to a
 To [reinitialize](https://access.redhat.com/solutions/452303) a replica from another working server:
 
 ```
-[root@broken-replica]# ipa-replica-manage re-initialize --from goof-replica.example.com
+[root@broken-replica]# ipa-replica-manage re-initialize --from good-replica.example.com
 ```
 
 Set the new RHEL Release.  If you're just starting, don't point to the next one; first get to the latest packages of your current release:
