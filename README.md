@@ -24,8 +24,11 @@ You cannot just jump to the latest RHEL release (i.e. 7.4 -> 7.8). You have to p
 * 7.4.latest -> 7.5.latest
 * ...
 * 7.7.latest -> 7.8.latest
+* 7.8.latest -> 7.9.latest
 
 You need to start from the *CA-Renewal Master* ([why?](https://access.redhat.com/solutions/4173861)).
+
+To retrieve the *CA-Renewal Master Server*:
 
 ```
 # kinit admin
@@ -33,33 +36,49 @@ You need to start from the *CA-Renewal Master* ([why?](https://access.redhat.com
 # ipa config-show | grep -i renewal
 ```
 
-Login to the server and run tmux. Have one tmux-window (I prefer to use split-panes) for each of these:
+Login to the server and run tmux. Open 4 tmux-windows (I prefer to use split-panes) for each of these. 
+
 * tail -f /var/log/dirsrv/*/errors
 * top -d1 
 * tail -f /var/log/ipaupgrade.log
 * a free shell where you can run commands
 
-**Note**: Don't avoid using tmux. It can really save your work if you get disconnected for any reason.
+**If you don't want to use tmux and its windows, at least use it on the shell you're using for the update commands, and use other ssh logins for the other commands.**
+
+### Briefely on tmux
+
+* To create a new tmux session, just run `tmux`. You'll see a green bar at the bottom.
+* To see if there are tmux sessions already open, run `tmux ls`.
+* To get into a previous session, run `tmux a` (attach).
+* To see if you are in a tmux session, `echo $TMUX`. If something is printed, you are in. Also, the green bar at the bottom is an hint.
+* While you are in a tmux session, use `Ctrl+b` and then press `c` to create a new tmux-window.
+* While you are in a tmux session, use `Ctrl+b` and then press `n` to cycle to the next window. Use `p` instead to go cycle backwards.
+* To exit a tmux session leaving the session open, `Ctrl+b` and then `d` (detach).
+* To close a tmux session, type `exit` on each one of the tmux windows.
+
+**Note**: **Don't avoid using tmux**. It can really save your work if you get disconnected for any reason.
 
 ### Let's go
 
-After stop all IDM services, other replicas should take care of the ipa-clients. The SRV records in the *_ldap._tcp.example.com* domain are there for this reason. To check them:
+First, retrieve all the servers in the IDM cluster. They should be defined in a DNS entry as SRV records. To see all the replicas available:
 
 ```
 # host -t SRV _ldap._tcp.example.com
 ```
 
-For each of the listed servers, login as root and take note of how many ldap connections are being served:
+(_Replace example.com with your domain_)
+
+If you stop all IDM services on a server, the other replicas should take care of the ipa-clients. The SRV records in the *_ldap._tcp.example.com* domain are there for this reason. 
+
+Starting with the CA-Renewal Master Server (see above), for each of the listed servers, login as root and open the tmux windows (see above), and run this command to see how many ldap connections are being served:
 
 ```
 # ss -ntp | grep -e :389 -e :636 -c
 ```
 
-It might be useful later when considering tuning.
+Take note of the number, it might be useful later if you are considering tuning.
 
-Shutting down services is going to disrupt some system's login. It always happens, especially if the firewall has the nasty habit of *forgetting* the idle connections without informing the peers (i.e. no *TCP Reset*). This can result in the ipa-client losing time trying to use a non-existent connection and timing out.
-
-Stop the IDM Services:
+Stop the IDM Services on the current server:
 
 ```
 # ipactl stop
@@ -72,23 +91,19 @@ Now it's a good time to take a snapshot. Please note that even if reverting to a
 [19/May/2020:16:44:01.553776061 +0200] - ERR - NSMMReplicationPlugin - send_updates - agmt="cn=meToreplica97.example.com" (replica97:389): Missing data encountered. If the error persists the replica must be reinitialized.
 ```
 
-To [reinitialize](https://access.redhat.com/solutions/452303) a replica from another working server:
+If you need to [reinitialize](https://access.redhat.com/solutions/452303) a replica from another working server you can run `ipa-replica-manage re-initialize --from good-replica.example.com` on the broken replica.
 
-```
-[root@broken-replica]# ipa-replica-manage re-initialize --from good-replica.example.com
-```
-
-Set the new RHEL Release.  If you're just starting, don't point to the next one; first get to the latest packages of your current release:
+Set the RHEL Release to the next version you're currently on. To get the current release:
 
 ```
 # cat /etc/redhat-release
-Red Hat Enterprise Linux Server release 7.4 (Maipo)
+Red Hat Enterprise Linux Server release 7.8 (Maipo)
 ```
 
-Set the release and clean the yum cache:
+Set the next release and clean the yum cache:
 
 ```
-# subscription-manager release --set=7.4 && yum clean all && rm -rf /var/cache/yum
+# subscription-manager release --set=7.9 && yum clean all && rm -rf /var/cache/yum
 ```
 
 
@@ -98,16 +113,18 @@ Update the sssd packages **only** ([why?](https://access.redhat.com/solutions/34
 # yum -y update sssd\*
 ```
 
-Restart SSSD cleaning its cache:
+Restart SSSD with cache cleanup:
 ```
-# systemctl stop sssd && rm -vf /var/lib/sss/db/* && systemctl  start sssd
+# systemctl stop sssd && rm -vf /var/lib/sss/db/* && systemctl start sssd
 ```
 
-Update the whole system:
+Now update the whole system (all RHEL and IDM related packages):
 
 ```
 # yum -y update
 ```
+
+### Some troubleshooting 
 
 The Cleanup phase of the IDM packages contain post-update rpm scripts that run `ipa-server-upgrade`. You will see some activity on the `errors` log file. While yum is in this phase, keep an eye on log file and `ipaupgrade.log` file. 
 
@@ -121,7 +138,7 @@ If it keeps being hung for several minutes, it is definitely stuck. I don't know
 
 take note of the uppermost thread, it should be running 100% or something like it.  Try `kill -9`ing that PID. The `errors` log should continue its start-stop-start until it has completed upgrading the schema.
 
-When yum update is finished, keep looking at the `errors` log file. It will tell you the schema-compat-plugin tree scan will start. If then it says `waiting for SSSD to become online...` it means SSSD did not start correctly.  
+When yum update is finished, keep looking at the `errors` log file. It will tell you the schema-compat-plugin tree scan will start. If it hangs saying `waiting for SSSD to become online...`, it means SSSD did not start correctly.   
 
 If you run `id someuser@ad.example.com` now, it may say the user does not exist.  Restart the service with a cleanup:
 
@@ -129,40 +146,42 @@ If you run `id someuser@ad.example.com` now, it may say the user does not exist.
 # systemctl stop sssd && rm -vf /var/lib/sss/db/* && systemctl  start sssd
 ```
 
-Wait a few seconds then try again resolving users with `id`. Also try to resolve SUDO rules:
+Wait a few seconds, then try again resolving users with `id`. It will work eventually.
+
+Now try to resolve SUDO rules:
 
 ```
 # sudo -ll -U someuser@ad.example.com
 ```
 
-If SSSD does not cooperate, try again restarting it with cache cleanup. It might take a few attempts.
+If still `id` and `sudo -ll` do not work, try again restarting SSSD with cache cleanup. It might take a few attempts.
 
-At this point, all is OK but you need to reboot the server to use the new kernel. In any case, it's ok to reboot now.
+At this point, all is OK but you need to reboot the server to use the new kernel. It's ok to reboot now.
 
 ```
 # shutdown -r now
 ```
 
-When the server comes back up, try again the `id` command and restart SSSD if it does not work, like said above. It has to work or the IDM services won't start.
+When the server comes back up, try again the `id` command and restart SSSD if it does not work, like said above. This has to work, otherwise the IDM services won't start correctly.
 
-Now run `ipa-server-upgrade`:
+Now run `ipa-server-upgrade` one last time:
 
 ```
 # ipa-server-upgrade -v
 ```
 
-As always, keep an eye on the `errors` log. It should behave like when `yum update` was running.
+As always, keep an eye on the `errors` log. It should do the same like when `yum update` was running.
 
 If dirsrv gets stuck while shutting down, follow the steps above until it completes the upgrade steps.
 
 When the ipa-server-upgrade completes successully, test again `id` and `sudo -ll` for some users. It should work.
 
-**Note**: In some cases, it is advised to disable the compat plugin while running the upgrades.  I did so, but it completely disabled one of the most customer-used features: the [sudo-for-local-user](https://access.redhat.com/solutions/2347541). I skipped disabling it without major problems. The most evident is the `waiting for SSSD to become online...` message like said above.
+**Note**: In some cases, it is advised to disable the _compat plugin_ while running the upgrades.  I did so, but it completely disabled one of the most customer-used features: the [sudo-for-local-user](https://access.redhat.com/solutions/2347541). I skipped disabling it without major problems. The most evident is the `waiting for SSSD to become online...` message like said above.
 
 ### Repeat for All Other Replicas
 
 Repeat on other replicas until all of them are at the same RHEL version. Do only **one server at a time**. Do not keep them on mixed releases (i.e. 7.4 and 7.5) for long time. This is not supported except while upgrading.
 
-When all servers are done, go back to the _CA-Renewal Master_ and repeat for the next RHEL release.
+When all servers are done, repeat for the next RHEL Release starting from the _CA-Renewal Master_.
 
 Have fun.
